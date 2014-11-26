@@ -1,0 +1,44 @@
+#!/bin/bash
+
+set -o xtrace
+
+luksfile="$1"
+[ -f "$luksfile" ] || exit 1
+
+# ignore one ctrl-c or ctrl-z
+CSIGNALS="SIGINT SIGSTOP"
+ignore_one() {
+    trap -- - $CSIGNALS
+    /bin/stty sane
+}
+
+name="${luksfile##*/}"
+set -e
+mountpath="$(/bin/mktemp --directory)"
+/bin/chmod 700 "$mountpath"
+/bin/chown 0:0 "$mountpath"
+set +e
+loopdev="$(/sbin/losetup --find)"
+
+/sbin/losetup "$loopdev" "$luksfile" && {
+    trap ignore_one $CSIGNALS
+    /sbin/cryptsetup luksOpen "$loopdev" "$name" && {
+        /bin/mount "/dev/mapper/$name" "$mountpath" && {
+            (
+                cd "$mountpath"
+                start_shell=(
+                    /usr/bin/sudo
+                    -u "$SUDO_USER"
+                    HISTFILE=/dev/null
+                    HISTIGNORE='*'
+                    -- /bin/bash -O autocd -O cdspell
+                )
+                "${start_shell[@]}"
+            )
+            /bin/umount "$mountpath"
+        }
+        /sbin/cryptsetup luksClose "$name"
+    }
+    /sbin/losetup --detach "$loopdev"
+}
+/bin/rmdir "$mountpath"

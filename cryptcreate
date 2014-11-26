@@ -1,0 +1,46 @@
+#!/bin/bash
+
+set -o xtrace
+
+luksfile="$1"
+shift || read -p 'LUKS file to create: ' luksfile
+[ ! -f "$luksfile" ] || exit 1
+
+size="$1"
+shift || read -p 'Size of file in 1M blocks: ' size
+
+# ignore one ctrl-c or ctrl-z
+CSIGNALS="SIGINT SIGSTOP"
+ignore_one() {
+    trap -- - $CSIGNALS
+    /bin/stty sane
+}
+
+set -e
+
+/bin/dd if=/dev/zero of="$luksfile" bs=1M count="$size"
+/bin/chown "$SUDO_USER:" "$luksfile"
+/sbin/cryptsetup luksFormat --use-random --batch-mode "$luksfile"
+/bin/chmod 0600 "$luksfile"
+
+name="${luksfile##*/}"
+
+loopdev="$(/sbin/losetup --find)"
+mountpath="$(/bin/mktemp --directory)"
+
+set +e
+/sbin/losetup "$loopdev" "$luksfile" && {
+    trap ignore_one $CSIGNALS
+    /sbin/cryptsetup luksOpen "$loopdev" "$name" && {
+        /sbin/mkfs /dev/mapper/"$name"
+        # set user as the owner of the root of the new FS
+        /bin/mount "/dev/mapper/$name" "$mountpath" && {
+            /bin/chown "$SUDO_USER:" "$mountpath"
+            /bin/chmod 0700 "$mountpath"
+            /bin/umount "$mountpath"
+        }
+        /sbin/cryptsetup luksClose "$name"
+    }
+    /sbin/losetup --detach "$loopdev"
+}
+/bin/rmdir "$mountpath"
